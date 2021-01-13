@@ -9,10 +9,14 @@ pytest-testrail
 This is a pytest plugin for creating/editing testplans or testruns based on pytest markers.
 The results of the collected tests will be updated against the testplan/testrun in TestRail.
 
+Apart from the original version, this repo offers the ability to take and attach screen shots 
+to test results. For this to happen, there must be a fixture that yields a webdriver instance. 
+The default is 'driver'. Tests need to be updated.
+
 Installation
 ------------
 
-    pip install pytest-testrail
+    pip install git+git@github.com:ianmuldoon/pytest-testrail.git
 
 Configuration
 -------------
@@ -63,10 +67,13 @@ Or if you want to add defects to testcase result:
     project_id = 2
     suite_id = 3
     plan_id = 4
-    description = 'This is an example description'
+    description = This is an example description
+    webdriver_fixture = driver
+    screenshot_directory = ./screenshots/failures
+    screenshot_as_jpg = True
 
     [TESTCASE]
-    custom_comment = 'This is a custom comment'
+    custom_comment = This is a custom comment
 ```
 
 Or
@@ -82,6 +89,7 @@ Once the all tests are finished they will be updated in TestRail:
 ```bash
     py.test --testrail --tr-config=<settings file>.cfg
 ```
+
 
 ### All available options
 
@@ -106,4 +114,7 @@ Once the all tests are finished they will be updated in TestRail:
 | --tr-dont-publish-blocked      | Do not publish results of "blocked" testcases in TestRail                                                                                          |
 | --tr-skip-missing              | Skip test cases that are not present in testrun                                                                                                    |
 | --tr-milestone-id              | Identifier of milestone to be assigned to run                                                                                                      |
+| --tr-webdriver-fixture         | Fixture name for selenium webdriver instance (used only for screenshots)                                                                           |
+| --tr-screenshot-directory      | Relative path to a directory in which to store screenshots if --tr-webdriver-fixture is used                                                       |
+| --tr-screenshot-as-jpg         | If passed, will convert screenshot png files to jpg using Pillow library                                                                           |
 | --tc-custom-comment            | Custom comment, to be appended to default comment for test case (config file: custom_comment in TESTCASE section)                                  |

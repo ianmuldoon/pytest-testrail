@@ -1,6 +1,8 @@
 # -*- coding: UTF-8 -*-
 from datetime import datetime
 from operator import itemgetter
+from urllib.parse import urljoin
+from PIL import Image
 
 import pytest
 import re
@@ -32,6 +34,7 @@ CLOSE_TESTPLAN_URL = 'close_plan/{}'
 GET_TESTRUN_URL = 'get_run/{}'
 GET_TESTPLAN_URL = 'get_plan/{}'
 GET_TESTS_URL = 'get_tests/{}'
+ADD_ATTACHMENT_TO_RESULT = "add_attachment_to_result/{}"
 
 COMMENT_SIZE_LIMIT = 4000
 
@@ -138,10 +141,20 @@ def get_testrail_keys(items):
     return testcaseids
 
 
+def convert_png_to_jpg(path: str) -> str:
+    """ Converts png to jpg """
+    jpg_path = path.replace('.png', '.jpg')
+    image = Image.open(path)
+    jpg = image.convert('RGB')
+    jpg.save(jpg_path)
+    return jpg_path
+
+
 class PyTestRailPlugin(object):
     def __init__(self, client, assign_user_id, project_id, suite_id, include_all, cert_check, tr_name,
                  tr_description='', run_id=0, plan_id=0, version='', close_on_complete=False,
-                 publish_blocked=True, skip_missing=False, milestone_id=None, custom_comment=None):
+                 publish_blocked=True, skip_missing=False, milestone_id=None, custom_comment=None,
+                 webdriver_fixture='driver', screenshot_directory='screenshots', screenshot_as_jpg=False):
         self.assign_user_id = assign_user_id
         self.cert_check = cert_check
         self.client = client
@@ -159,6 +172,11 @@ class PyTestRailPlugin(object):
         self.skip_missing = skip_missing
         self.milestone_id = milestone_id
         self.custom_comment = custom_comment
+        self.screenshots = {}
+        self.final_tests = None
+        self.webdriver_fixture = webdriver_fixture
+        self.screenshot_directory = screenshot_directory
+        self.screenshot_as_jpg = screenshot_as_jpg
 
     # pytest hooks
 
@@ -220,7 +238,11 @@ class PyTestRailPlugin(object):
             defectids = item.get_closest_marker(TESTRAIL_DEFECTS_PREFIX).kwargs.get('defect_ids')
         if item.get_closest_marker(TESTRAIL_PREFIX):
             testcaseids = item.get_closest_marker(TESTRAIL_PREFIX).kwargs.get('ids')
+
             if rep.when == 'call' and testcaseids:
+
+                self.take_webdriver_screenshot(item=item, testcaseids=testcaseids)
+
                 if defectids:
                     self.add_result(
                         clean_test_ids(testcaseids),
@@ -238,6 +260,21 @@ class PyTestRailPlugin(object):
                         duration=rep.duration,
                         test_parametrize=test_parametrize
                     )
+
+    def take_webdriver_screenshot(self, item, testcaseids):
+        try:
+            request = item.funcargs['request']
+            driver = request.getfixturevalue(self.webdriver_fixture)
+            save_location = urljoin(self.screenshot_directory, f'{request.node.name}.png')
+            saved_screenshot = driver.save_screenshot(save_location)
+            if saved_screenshot:
+                if self.screenshot_as_jpg:
+                    save_location = convert_png_to_jpg(save_location)
+                cases = clean_test_ids(testcaseids)
+                for case in cases:
+                    self.screenshots[case] = save_location
+        except pytest.FixtureLookupError:
+            print(f'Webdriver fixture {self.webdriver_fixture} not found. Skipping screenshot.')
 
     def pytest_sessionfinish(self, session, exitstatus):
         """ Publish results in TestRail """
@@ -305,16 +342,13 @@ class PyTestRailPlugin(object):
         # self.results.sort(key=itemgetter('status_id'))
         self.results.sort(key=itemgetter('case_id'))
 
+        # to compare for screenshots - There may be a better way to do this.
+        self.final_tests = self.get_tests(testrun_id)
+        # print(f"final_tests: {self.final_tests}")  # FOR DEBUGGING SS PROBLEMS
+
         # Manage case of "blocked" testcases
         if self.publish_blocked is False:
-            print('[{}] Option "Don\'t publish blocked testcases" activated'.format(TESTRAIL_PREFIX))
-            blocked_tests_list = [
-                test.get('case_id') for test in self.get_tests(testrun_id)
-                if test.get('status_id') == TESTRAIL_TEST_STATUS["blocked"]
-            ]
-            print('[{}] Blocked testcases excluded: {}'.format(TESTRAIL_PREFIX,
-                                                               ', '.join(str(elt) for elt in blocked_tests_list)))
-            self.results = [result for result in self.results if result.get('case_id') not in blocked_tests_list]
+            self._exclude_blocked_tests_from_results(testrun_id)
 
         # prompt enabling include all test cases from test suite when creating test run
         if self.include_all:
@@ -323,43 +357,85 @@ class PyTestRailPlugin(object):
         # Publish results
         data = {'results': []}
         for result in self.results:
-            entry = {'status_id': result['status_id'], 'case_id': result['case_id'], 'defects': result['defects']}
-            if self.version:
-                entry['version'] = self.version
-            comment = result.get('comment', '')
-            test_parametrize = result.get('test_parametrize', '')
-            entry['comment'] = u''
-            if test_parametrize:
-                entry['comment'] += u"# Test parametrize: #\n"
-                entry['comment'] += str(test_parametrize) + u'\n\n'
-            if comment:
-                if self.custom_comment:
-                    entry['comment'] += self.custom_comment + '\n'
-                    # Indent text to avoid string formatting by TestRail. Limit size of comment.
-                    entry['comment'] += u"# Pytest result: #\n"
-                    entry['comment'] += u'Log truncated\n...\n' if len(str(comment)) > COMMENT_SIZE_LIMIT else u''
-                    entry['comment'] += u"    " + converter(str(comment), "utf-8")[-COMMENT_SIZE_LIMIT:].replace('\n', '\n    ') # noqa
-                else:
-                    # Indent text to avoid string formatting by TestRail. Limit size of comment.
-                    entry['comment'] += u"# Pytest result: #\n"
-                    entry['comment'] += u'Log truncated\n...\n' if len(str(comment)) > COMMENT_SIZE_LIMIT else u''
-                    entry['comment'] += u"    " + converter(str(comment), "utf-8")[-COMMENT_SIZE_LIMIT:].replace('\n', '\n    ') # noqa
-            elif comment == '':
-                entry['comment'] = self.custom_comment
-            duration = result.get('duration')
-            if duration:
-                duration = 1 if (duration < 1) else int(round(duration))  # TestRail API doesn't manage milliseconds
-                entry['elapsed'] = str(duration) + 's'
-            data['results'].append(entry)
+            self._create_result_entry(converter, data, result)
 
         response = self.client.send_post(
             ADD_RESULTS_URL.format(testrun_id),
             data,
             cert_check=self.cert_check
         )
-        error = self.client.get_error(response)
+        json_resp = response.json()
+        error = self.client.get_error(json_response=json_resp)
+
         if error:
             print('[{}] Info: Testcases not published for following reason: "{}"'.format(TESTRAIL_PREFIX, error))
+
+        else:
+            # Start of screenshot code for this method
+            for resp in json_resp:
+                # print(f"result: {result}")  # For Debugging
+                ss_path, test = None, None
+                for test in self.final_tests:
+                    if test['id'] == resp['test_id']:
+                        ss_path = self.screenshots.get(test['case_id'], None)
+
+                if not ss_path:
+                    continue
+
+                response = self.client.send_post(
+                    ADD_ATTACHMENT_TO_RESULT.format(resp['id']),
+                    ss_path
+                )
+
+                json_resp = response.json()
+                error = self.client.get_error(json_response=json_resp)
+                if error:
+                    print(f'Unable to attach file {self.screenshots[test["case_id"]]} to test ID {resp["id"]}')
+
+    def _exclude_blocked_tests_from_results(self, testrun_id):
+        print('[{}] Option "Don\'t publish blocked testcases" activated'.format(TESTRAIL_PREFIX))
+        blocked_tests_list = [
+            test.get('case_id') for test in self.get_tests(testrun_id)
+            if test.get('status_id') == TESTRAIL_TEST_STATUS["blocked"]
+        ]
+        print('[{}] Blocked testcases excluded: {}'.format(TESTRAIL_PREFIX,
+                                                           ', '.join(str(elt) for elt in blocked_tests_list)))
+        self.results = [result for result in self.results if result.get('case_id') not in blocked_tests_list]
+
+    def _create_result_entry(self, converter, data, result):
+        entry = {'status_id': result['status_id'], 'case_id': result['case_id'], 'defects': result['defects']}
+        if self.version:
+            entry['version'] = self.version
+        comment = result.get('comment', '')
+        test_parametrize = result.get('test_parametrize', '')
+        entry['comment'] = u''
+        if test_parametrize:
+            entry['comment'] += u"# Test parametrize: #\n"
+            entry['comment'] += str(test_parametrize) + u'\n\n'
+        self._set_entry_comment_text(comment, converter, entry)
+        duration = result.get('duration')
+        if duration:
+            duration = 1 if (duration < 1) else int(round(duration))  # TestRail API doesn't manage milliseconds
+            entry['elapsed'] = str(duration) + 's'
+        data['results'].append(entry)
+
+    def _set_entry_comment_text(self, comment, converter, entry):
+        if comment:
+            if self.custom_comment:
+                entry['comment'] += self.custom_comment + '\n'
+                # Indent text to avoid string formatting by TestRail. Limit size of comment.
+                entry['comment'] += u"# Pytest result: #\n"
+                entry['comment'] += u'Log truncated\n...\n' if len(str(comment)) > COMMENT_SIZE_LIMIT else u''
+                entry['comment'] += u"    " + converter(str(comment), "utf-8")[-COMMENT_SIZE_LIMIT:].replace('\n',
+                                                                                                             '\n    ')  # noqa
+            else:
+                # Indent text to avoid string formatting by TestRail. Limit size of comment.
+                entry['comment'] += u"# Pytest result: #\n"
+                entry['comment'] += u'Log truncated\n...\n' if len(str(comment)) > COMMENT_SIZE_LIMIT else u''
+                entry['comment'] += u"    " + converter(str(comment), "utf-8")[-COMMENT_SIZE_LIMIT:].replace('\n',
+                                                                                                             '\n    ')  # noqa
+        elif comment == '':
+            entry['comment'] = self.custom_comment
 
     def create_test_run(self, assign_user_id, project_id, suite_id, include_all,
                         testrun_name, tr_keys, milestone_id, description=''):
@@ -383,14 +459,17 @@ class PyTestRailPlugin(object):
             data,
             cert_check=self.cert_check
         )
-        error = self.client.get_error(response)
+        json_resp = response.json()
+
+        error = self.client.get_error(json_response=json_resp)
         if error:
             print('[{}] Failed to create testrun: "{}"'.format(TESTRAIL_PREFIX, error))
         else:
-            self.testrun_id = response['id']
-            print('[{}] New testrun created with name "{}" and ID={}'.format(TESTRAIL_PREFIX,
+            self.testrun_id = json_resp['id']
+            print('[{}] New testrun created with Name="{}" and ID={}'.format(TESTRAIL_PREFIX,
                                                                              testrun_name,
                                                                              self.testrun_id))
+            # print(f"Tests: {self.get_tests(self.testrun_id)}")  # For Debugging
 
     def close_test_run(self, testrun_id):
         """
@@ -402,7 +481,9 @@ class PyTestRailPlugin(object):
             data={},
             cert_check=self.cert_check
         )
-        error = self.client.get_error(response)
+        json_resp = response.json()
+
+        error = self.client.get_error(json_response=json_resp)
         if error:
             print('[{}] Failed to close test run: "{}"'.format(TESTRAIL_PREFIX, error))
         else:
@@ -410,7 +491,7 @@ class PyTestRailPlugin(object):
 
     def close_test_plan(self, testplan_id):
         """
-        Closes testrun.
+        Closes testplan.
 
         """
         response = self.client.send_post(
@@ -418,7 +499,9 @@ class PyTestRailPlugin(object):
             data={},
             cert_check=self.cert_check
         )
-        error = self.client.get_error(response)
+        json_resp = response.json()
+
+        error = self.client.get_error(json_response=json_resp)
         if error:
             print('[{}] Failed to close test plan: "{}"'.format(TESTRAIL_PREFIX, error))
         else:
@@ -434,12 +517,14 @@ class PyTestRailPlugin(object):
             GET_TESTRUN_URL.format(self.testrun_id),
             cert_check=self.cert_check
         )
-        error = self.client.get_error(response)
+        json_resp = response.json()
+
+        error = self.client.get_error(json_response=json_resp)
         if error:
             print('[{}] Failed to retrieve testrun: "{}"'.format(TESTRAIL_PREFIX, error))
             return False
 
-        return response['is_completed'] is False
+        return json_resp['is_completed'] is False
 
     def is_testplan_available(self):
         """
@@ -451,12 +536,14 @@ class PyTestRailPlugin(object):
             GET_TESTPLAN_URL.format(self.testplan_id),
             cert_check=self.cert_check
         )
-        error = self.client.get_error(response)
+        json_resp = response.json()
+
+        error = self.client.get_error(json_response=json_resp)
         if error:
             print('[{}] Failed to retrieve testplan: "{}"'.format(TESTRAIL_PREFIX, error))
             return False
 
-        return response['is_completed'] is False
+        return json_resp['is_completed'] is False
 
     def get_available_testruns(self, plan_id):
         """
@@ -468,11 +555,13 @@ class PyTestRailPlugin(object):
             GET_TESTPLAN_URL.format(plan_id),
             cert_check=self.cert_check
         )
-        error = self.client.get_error(response)
+        json_resp = response.json()
+
+        error = self.client.get_error(json_response=json_resp)
         if error:
             print('[{}] Failed to retrieve testplan: "{}"'.format(TESTRAIL_PREFIX, error))
         else:
-            for entry in response['entries']:
+            for entry in json_resp['entries']:
                 for run in entry['runs']:
                     if not run['is_completed']:
                         testruns_list.append(run['id'])
@@ -487,8 +576,9 @@ class PyTestRailPlugin(object):
             GET_TESTS_URL.format(run_id),
             cert_check=self.cert_check
         )
-        error = self.client.get_error(response)
+        json_resp = response.json()
+        error = self.client.get_error(json_response=json_resp)
         if error:
             print('[{}] Failed to get tests: "{}"'.format(TESTRAIL_PREFIX, error))
             return None
-        return response
+        return json_resp

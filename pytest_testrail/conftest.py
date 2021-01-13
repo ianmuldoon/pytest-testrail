@@ -121,6 +121,26 @@ def pytest_addoption(parser):
         help='Custom comment, to be appended to default comment for test case \
               (config file: custom_comment in TESTCASE section)'
     )
+    group.addoption(
+        "--tr-webdriver-fixture",
+        action='store',
+        default=None,
+        required=False,
+        help='Name of fixture that yields webdriver instance.'
+    )
+    group.addoption(
+        "--tr-screenshot-directory",
+        action='store',
+        default=None,
+        required=False,
+        help='Directory within which to store screen shots if driver fixturename is passed to --tr-webdriver-fixture'
+    )
+    group.addoption(
+        '--tr-screenshot-as-jpg',
+        action='store_true',
+        default=None,
+        required=False,
+        help='If passed, screenshots will be converted (using PIL) from png to jpg')
 
 
 def pytest_configure(config):
@@ -151,7 +171,11 @@ def pytest_configure(config):
                 publish_blocked=config.getoption('--tr-dont-publish-blocked'),
                 skip_missing=config.getoption('--tr-skip-missing'),
                 milestone_id=config_manager.getoption('tr-milestone-id', 'milestone_id', 'TESTRUN'),
-                custom_comment=config_manager.getoption('tc-custom-comment', 'custom_comment', 'TESTCASE')
+                custom_comment=config_manager.getoption('tc-custom-comment', 'custom_comment', 'TESTCASE'),
+                webdriver_fixture=config_manager.getoption('tr-webdriver-fixture', 'webdriver_fixture', 'TESTRUN'),
+                screenshot_directory=config_manager.getoption('tr-screenshot-directory', 'screenshot_directory', 'TESTRUN'),
+                screenshot_as_jpg=config_manager.getoption('tr-screenshot-as-jpg', 'screenshot_as_jpg', 'TESTRUN',
+                                                           is_bool=True, default=None)
             ),
             # Name of plugin instance (allow to be used by other plugins)
             name="pytest-testrail-instance"
