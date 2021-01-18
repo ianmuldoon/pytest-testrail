@@ -3,9 +3,9 @@ from setuptools import setup
 INSTALL_REQUIREMENTS = 'requirements/base.txt'
 
 
-def read_file(fname):
-    with open(fname) as f:
-        return f.read()
+def read_file(file, split_lines=False):
+    with open(file, 'r') as f:
+        return f.read().splitlines() if split_lines else f.read()
 
 
 def get_requirements(*files):
