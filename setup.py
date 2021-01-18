@@ -1,9 +1,19 @@
 from setuptools import setup
 
+INSTALL_REQUIREMENTS = 'requirements/base.txt'
+
 
 def read_file(fname):
     with open(fname) as f:
         return f.read()
+
+
+def get_requirements(*files):
+    requirements = set()
+    for file in files:
+        for requirement in read_file(file, split_lines=True):
+            requirements.add(requirement)
+    return list(requirements)
 
 
 setup(
@@ -18,10 +28,7 @@ setup(
         'pytest_testrail',
     ],
     package_dir={'pytest_testrail': 'pytest_testrail'},
-    install_requires=[
-        'pytest>=3.6',
-        'requests>=2.20.0',
-    ],
+    install_requires=get_requirements(INSTALL_REQUIREMENTS),
     include_package_data=True,
     entry_points={'pytest11': ['pytest-testrail = pytest_testrail.conftest']},
 )
