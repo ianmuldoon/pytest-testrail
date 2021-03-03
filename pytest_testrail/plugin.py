@@ -262,19 +262,21 @@ class PyTestRailPlugin(object):
                     )
 
     def take_webdriver_screenshot(self, item, testcaseids):
-        try:
-            request = item.funcargs['request']
-            driver = request.getfixturevalue(self.webdriver_fixture)
-            save_location = urljoin(self.screenshot_directory, f'{request.node.name}.png')
-            saved_screenshot = driver.save_screenshot(save_location)
-            if saved_screenshot:
-                if self.screenshot_as_jpg:
-                    save_location = convert_png_to_jpg(save_location)
-                cases = clean_test_ids(testcaseids)
-                for case in cases:
-                    self.screenshots[case] = save_location
-        except pytest.FixtureLookupError:
-            print(f'Webdriver fixture {self.webdriver_fixture} not found. Skipping screenshot.')
+        fixtures = getattr(item, "fixturenames", [])
+        if self.webdriver_fixture in fixtures:
+            try:
+                request = item.funcargs['request']
+                driver = request.getfixturevalue(self.webdriver_fixture)
+                save_location = urljoin(self.screenshot_directory, f'{request.node.name}.png')
+                saved_screenshot = driver.save_screenshot(save_location)
+                if saved_screenshot:
+                    if self.screenshot_as_jpg:
+                        save_location = convert_png_to_jpg(save_location)
+                    cases = clean_test_ids(testcaseids)
+                    for case in cases:
+                        self.screenshots[case] = save_location
+            except pytest.FixtureLookupError:
+                print(f'Webdriver fixture {self.webdriver_fixture} not found. Skipping screenshot.')
 
     def pytest_sessionfinish(self, session, exitstatus):
         """ Publish results in TestRail """
