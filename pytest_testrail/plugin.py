@@ -1,14 +1,16 @@
 # -*- coding: UTF-8 -*-
+import re
+import warnings
 from datetime import datetime
 from operator import itemgetter
 from urllib.parse import urljoin
-from PIL import Image
 
 import pytest
-import re
-import warnings
+from PIL import Image
+from _pytest.reports import CollectReport
 
 # Reference: http://docs.gurock.com/testrail-api2/reference-statuses
+
 TESTRAIL_TEST_STATUS = {
     "passed": 1,
     "blocked": 2,
@@ -36,7 +38,7 @@ GET_TESTPLAN_URL = 'get_plan/{}'
 GET_TESTS_URL = 'get_tests/{}'
 ADD_ATTACHMENT_TO_RESULT = "add_attachment_to_result/{}"
 
-COMMENT_SIZE_LIMIT = 4000
+COMMENT_SIZE_LIMIT = 4000000
 
 
 class DeprecatedTestDecorator(DeprecationWarning):
@@ -227,13 +229,14 @@ class PyTestRailPlugin(object):
     def pytest_runtest_makereport(self, item, call):
         """ Collect result and associated testcases (TestRail) of an execution """
         outcome = yield
-        rep = outcome.get_result()
+        rep: CollectReport = outcome.get_result()
+
         defectids = None
         if 'callspec' in dir(item):
             test_parametrize = item.callspec.params
         else:
             test_parametrize = None
-        comment = rep.longrepr
+        comment = self._get_test_log(report=rep)
         if item.get_closest_marker(TESTRAIL_DEFECTS_PREFIX):
             defectids = item.get_closest_marker(TESTRAIL_DEFECTS_PREFIX).kwargs.get('defect_ids')
         if item.get_closest_marker(TESTRAIL_PREFIX):
@@ -260,6 +263,17 @@ class PyTestRailPlugin(object):
                         duration=rep.duration,
                         test_parametrize=test_parametrize
                     )
+
+    @staticmethod
+    def _get_test_log(report: CollectReport):
+        log = []
+        if report.longrepr:
+            log.extend(report.longreprtext.splitlines())
+        for section in report.sections:
+            separator = '-' * 30
+            log.append(f'{separator} {section[0]} {separator}')
+            log.append(section[1])
+        return '\n'.join(log)
 
     def take_webdriver_screenshot(self, item, testcaseids):
         fixtures = getattr(item, "fixturenames", [])
@@ -412,7 +426,7 @@ class PyTestRailPlugin(object):
         test_parametrize = result.get('test_parametrize', '')
         entry['comment'] = u''
         if test_parametrize:
-            entry['comment'] += u"# Test parametrize: #\n"
+            entry['comment'] += u"# Parametrized test: #\n"
             entry['comment'] += str(test_parametrize) + u'\n\n'
         self._set_entry_comment_text(comment, converter, entry)
         duration = result.get('duration')
